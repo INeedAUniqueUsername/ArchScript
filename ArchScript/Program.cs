@@ -10,16 +10,70 @@ namespace Main {
 
 	class Program {
 		static void Main(string[] args) {
+			Program p = new Program();
+			p.run();
+		}
+		private void run() {
 			LispContext context = new LispContext();
+			context.DefineDefaultGlobals();
 			while (true) {
-				Console.WriteLine(new LispCode(context, Console.ReadLine()).eval().ToString());
+				Console.WriteLine(context.eval(Console.ReadLine()).ToString());
 			}
 		}
 	}
 
 	namespace Intermediate {
 		class LispContext {
-			public Dictionary<string, LispData> globals = new Dictionary<string, LispData>();
+			public Dictionary<string, LispData> globals { get; private set; } = new Dictionary<string, LispData>();
+			public void DefineDefaultGlobals() {
+				DefineGlobal("add", new LispLambda(args => {
+					float total = 0;
+					bool integer = true;
+					args.ForEach(expression => {
+						LispData n = expression.eval();
+						if(n is LispFloat f) {
+							integer = false;
+							total += f.value;
+						} else if(n is LispInt i) {
+							total += i.value;
+						}
+					});
+					if(integer) {
+						return new LispInt((int) total);
+					} else {
+						return new LispFloat(total);
+					}
+				}));
+				DefineGlobal("setq", new LispLambda(args => {
+					string key = "";
+					LispExpression first = args[0];
+					LispData first2 = first.eval();
+					if(first is LispSymbol symbol) {
+						key = symbol.symbol;
+					} else if(first2 is LispString s) {
+						key = s.value;
+					}
+					if(key.Length > 0) {
+						return globals[key] = args[1].eval();
+					} else {
+						return new LispError("Identifier expected [" + first2 + "] ### " + " ###");
+					}
+				}));
+				DefineGlobal("eval", new LispLambda(args => {
+					LispData first = args[0].eval();
+					if(first is LispString s) {
+						return new LispSymbol(this, s.value).eval();
+					} else {
+						return new LispError("not implemented yet");
+					}
+				}));
+			}
+			private void DefineGlobal(string name, LispData value) {
+				globals[name] = value;
+			}
+			public LispData eval(string code) {
+				return new LispCode(this, code).eval();
+			}
 		}
 		interface LispExpression {
 			LispData eval();
@@ -34,31 +88,31 @@ namespace Main {
 			}
 			public LispData eval() {
 				int i = 0;
-				return eval(ref i);
+				return process(ref i).eval();
 			}
-			private LispData eval(ref int index) {
+			private LispExpression process(ref int index) {
 				int begin = index;
 				while (index < code.Length) {
 					char c = code[index];
 					switch (c) {
 						case '"':
 							index++;
-							return String(ref index);
+							return new LispLiteral(String(ref index));
 						case '\'':
 							index++;
-							return Literal(ref index);
+							return new LispLiteral(Literal(ref index));
 						case var digit when (c >= '0' && c <= '9'):
-							return LiteralNumber(ref index);
+							return new LispLiteral(LiteralNumber(ref index));
 						case var letter when (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
-							return Symbol(ref index).eval();
+							return Symbol(ref index);
 						case '(':
 							index++;
-							return Tree(ref index).eval();
+							return Tree(ref index);
 
 					}
 					index++;
 				}
-				return new LispError("unknown ### " + code.Substring(begin, 1 + index - begin) + " ###");
+				return new LispLiteral(new LispError("unknown ### " + code.Substring(begin, index - begin) + " ###"));
 			}
 			/**
 			 * i: index of the first character after the apostrophe
@@ -98,7 +152,7 @@ namespace Main {
 			}
 			/**
 			 * i: index of the first character after the apostrophe
-			 * Result: i set to the closing parenthesis
+			 * Result: i set to directly after the closing parenthesis
 			 * */
 			private LispData LiteralList(ref int i) {
 				int begin2 = i;
@@ -106,12 +160,14 @@ namespace Main {
 				while (i < code.Length) {
 					char c = code[i];
 					switch (c) {
+						case ' ':
+							i++;
+							break;
 						case ')':
+							i++;
 							return new LispList(items);
 						default:
 							items.Add(Literal(ref i));
-							if (i != code.Length && code[i] != '(' && code[i] != ')')
-								i++;
 							break;
 					}
 				}
@@ -150,10 +206,11 @@ namespace Main {
 							i++;
 							return LiteralFloat(ref i, n);
 						case ' ':
+						case '(':
 						case ')':
 							return new LispInt(n);
 						default:
-							return new LispError("Invalid int format ### " + code.Substring(begin, 1 + i - begin) + " ###");
+							return new LispError("Invalid number format ### " + code.Substring(begin, 1 + i - begin) + " ###");
 					}
 					i++;
 				}
@@ -173,6 +230,7 @@ namespace Main {
 							d += (c - '0') / (10f * (1 + i - begin));
 							break;
 						case ' ':
+						case '(':
 						case ')':
 							return new LispFloat(n + d);
 						default:
@@ -202,60 +260,88 @@ namespace Main {
 				}
 				return new LispSymbol(context, symbol.ToString());
 			}
-			//Basically eval except we use a tree????
+			//We use this to handle function calls
 			private LispExpression Tree(ref int i) {
 				int begin = i;
 				List<LispExpression> items = new List<LispExpression>();
 				while(i < code.Length) {
 					char c = code[i];
 					switch(c) {
-						case var digit when (digit >= '0' && digit <= '9'):
-							items.Add(new LispLiteral(LiteralNumber(ref i)));
+						case ')':
+							return new LispTree(context, items, code.Substring(begin, i - begin));
+						case ' ':
+							i++;
 							break;
 						default:
-
+							items.Add(process(ref i));
 							break;
 					}
-					i++;
 				}
-				throw new NotImplementedException("this doesn't look very good...");
+				return new LispLiteral(new LispError("mismatched close parenthesis ### " + code.Substring(begin, i - begin) + " ###"));
 			}
-			//Container for a literal (which always evaluates to itself)
-			class LispLiteral : LispExpression {
-				private LispData literal;
-				public LispLiteral(LispData literal) {
-					this.literal = literal;
-				}
-				public LispData eval() => literal;
+		}
+		//Container for a literal (which always evaluates to itself)
+		class LispLiteral : LispExpression {
+			private LispData literal;
+			public LispLiteral(LispData literal) {
+				this.literal = literal;
 			}
-			class LispSymbol : LispExpression {
-				private LispContext context;
-				public string symbol { get; private set; }
-				public LispSymbol(LispContext context, string symbol) {
-					this.context = context;
-					this.symbol = symbol;
-				}
-				public LispData eval() => new LispError("no binding for symbol [" + symbol + "]");
+			public LispData eval() => literal;
+		}
+		class LispSymbol : LispExpression {
+			private LispContext context;
+			public string symbol { get; private set; }
+			public LispSymbol(LispContext context, string symbol) {
+				this.context = context;
+				this.symbol = symbol;
 			}
-			class LispTree : LispExpression {
-				public LispContext context { get; private set; }
-				public List<LispTree> items { get; private set; }
-				public LispTree(LispContext context, List<LispTree> items) {
-					this.context = context;
-					this.items = items;
-				}
-				public LispData eval() {
-					//If our first item is a string literal
-					throw new NotImplementedException();
-				}
-				public string ToString() {
-					string result = "LispTree[";
-					foreach (LispData e in items) {
-						result += e.ToString() + ", ";
+			public LispData eval() {
+				return context.globals.ContainsKey(symbol) ?  context.globals[symbol] : new LispError("no binding for symbol [" + symbol + "]");
+			}
+		}
+		class LispTree : LispExpression {
+			public LispContext context { get; private set; }
+			public List<LispExpression> items { get; private set; }
+			private string code;    //For debug purposes only
+			public LispTree(LispContext context, List<LispExpression> items, string code) {
+				this.context = context;
+				this.items = items;
+				this.code = code;
+			}
+			public LispData eval() {
+				var first = items[0].eval();
+				if (first is LispInt i) {
+					return new LispError("function name expected [" + i.value + "] ### " + code + " ###");
+				} else if (first is LispFloat f) {
+					return new LispError("function name expected [" + f.value + "] ### " + code + " ###");
+				} else {
+					LispLambda function = null;
+					if (first is LispLambda l) {
+						function = l;
+					} else if (first is LispString s) {
+						LispData binding = context.globals[s.value];
+						if (binding == null) {
+							return new LispError("unknown function [" + s.value + "] ### " + code + " ###");
+						} else if (binding is LispLambda l2) {
+							function = l2;
+						} else {
+							return new LispError("function name expected [" + s.value + "] ### " + code + " ###");
+						}
 					}
-					result += ']';
-					return result;
+					if(function == null) {
+						return new LispError("function name expected [" + first.ToString() + "] ### " + code + " ###");
+					} else {
+						return function.run(items.GetRange(1, items.Count - 1));
+					}
 				}
+			}
+			public string ToString() {
+				string result = "LispTree[";
+				foreach (LispData e in items) {
+					result += e.ToString() + ", ";
+				}
+				result += ']';
+				return result;
 			}
 		}
 	}
@@ -266,9 +352,12 @@ namespace Main {
 	}
 	
 	class LispLambda : LispData {
-		public Func<List<LispData>, LispData> code { get; private set; }
-		public LispLambda(Func<List<LispData>, LispData> code) {
+		public Func<List<LispExpression>, LispData> code { get; private set; }
+		public LispLambda(Func<List<LispExpression>, LispData> code) {
 			this.code = code;
+		}
+		public LispData run(List<LispExpression> args) {
+			return code.Invoke(args);
 		}
 	}
 	class LispInt : LispData {
@@ -283,6 +372,7 @@ namespace Main {
 		public LispFloat(float value) {
 			this.value = value;
 		}
+		public string ToString() => "LispFloat[" + value + "]";
 	}
 	class LispList : LispData {
 		public List<LispData> items { get; private set; }
@@ -292,8 +382,9 @@ namespace Main {
 		public string ToString() {
 			string result = "LispList[";
 			foreach(LispData e in items) {
-				result += e.ToString() + ", ";
+				result += e.ToString() + " ";
 			}
+			result = result.TrimEnd();
 			result += ']';
 			return result;
 		}
