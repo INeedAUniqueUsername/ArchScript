@@ -263,13 +263,26 @@ namespace Main {
 		class LispCode : LispExpression {
 			private LispContext context;
 			public string source { get; private set; }
+			(int row, int column) pos;
+
+			LispExpression result;
 			public LispCode(LispContext context, string code) {
 				this.context = context;
 				this.source = code;
+				pos = (0, 0);
+				result = process();
 			}
-			public LispData eval() {
+			public LispData eval() => result.eval();
+			private void updatePos(char c) {
+				if (c == '\n') {
+					pos = (pos.row + 1, 0);
+				} else {
+					pos.column++;
+				}
+			}
+			private LispExpression process() {
 				int i = 0;
-				return process(ref i).eval();
+				return process(ref i);
 			}
 			private LispExpression process(ref int index) {
 				int begin = index;
@@ -277,6 +290,7 @@ namespace Main {
 				while (index < source.Length) {
 					char c = source[index];
 					local.Append(c);
+					updatePos(c);
 					switch (c) {
 						case '"':
 							index++;
@@ -310,6 +324,7 @@ namespace Main {
 				while (index < source.Length) {
 					char c = source[index];
 					local.Append(c);
+					updatePos(c);
 					switch (c) {
 						case '"':
 							index++;
@@ -326,11 +341,13 @@ namespace Main {
 			 * Call this function when you encounter an apostrophe literal. We determine which type of literal we have.
 			 * */
 			private LispData Literal(ref int index) {
-				switch (source[index]) {
+				char c = source[index];
+				updatePos(c);
+				switch (c) {
 					case '(':
 						index++;
 						return LiteralList(ref index);
-					case var c when (c >= '0' && c <= '9'): {
+					case var c2 when (c2 >= '0' && c2 <= '9'): {
 						return LiteralNumber(ref index);
 					}
 					case ' ':
@@ -350,6 +367,7 @@ namespace Main {
 				while (i < source.Length) {
 					char c = source[i];
 					local.Append(c);
+					updatePos(c);
 					switch (c) {
 						case ' ':
 							i++;
@@ -375,6 +393,7 @@ namespace Main {
 				StringBuilder result = new StringBuilder();
 				while (i < source.Length) {
 					char c = source[i];
+					updatePos(c);
 					if (c == ' ' || c == '(' || c == ')') {
 						goto Exit;
 					} else {
@@ -396,6 +415,7 @@ namespace Main {
 				while (i < source.Length) {
 					char c = source[i];
 					local.Append(c);
+					updatePos(c);
 					switch (c) {
 						case var d when (d >= '0' && d <= '9'):
 							n = (n * 10) + (c - '0');
@@ -427,6 +447,7 @@ namespace Main {
 				while (i < source.Length) {
 					char c = source[i];
 					local.Append(c);
+					updatePos(c);
 					switch (c) {
 						case var c2 when (c >= '0' && c <= '9'):
 							d += (c - '0') / (10f * (1 + i - begin));
@@ -453,6 +474,7 @@ namespace Main {
 				StringBuilder symbol = new StringBuilder();
 				while (i < source.Length) {
 					char c = source[i];
+					updatePos(c);
 					switch (c) {
 						case '(':
 						case ')':
@@ -481,7 +503,8 @@ namespace Main {
 				List<LispExpression> items = new List<LispExpression>();
 				while(i < source.Length) {
 					char c = source[i];
-					switch(c) {
+					updatePos(c);
+					switch (c) {
 						case ')':
 							//return new LispTree(context, items);
 							i++;
@@ -572,6 +595,11 @@ namespace Main {
 		}
 	}
 	namespace Data {
+		static class SData {
+			public static LispLiteral ToLiteral(LispData data) {
+				return new LispLiteral(data);
+			}
+		}
 		interface LispData {
 			bool IsNil();
 			string AsString();
@@ -610,7 +638,11 @@ namespace Main {
 			Number,
 			String,
 			Struct,
-			Quoted
+			Symbol,
+			Unevaluated,
+			Any,
+			AnyNonerror,
+			RestNonerror
 		}
 		static class LispFunctionHelper {
 			public static bool matches(this TypeArgs type, LispExpression e, out LispData result) {
@@ -722,7 +754,35 @@ namespace Main {
 			}
 			public bool IsNil() => false;
 			public string AsString() => "[lambda expression]";
+			public LispError checkArgs(List<LispExpression> args) {
+				if (typeArgs == null)
+					return null;
+				for(int i = 0; i < args.Count; i++) {
+					TypeArgs type;
+					LispExpression arg = args[i];
+					if(i < typeArgs.Count) {
+						type = typeArgs[i];
+						//When we evaluate the argument, we replace its list item with a literal
+						switch(type) {
+						}
+					} else {
+						type = typeArgs[typeArgs.Count - 1];
+						switch(type) {
+							case TypeArgs.RestNonerror:
+								if (arg is LispError e)
+									return e;
+								break;
+							default:
+								return new LispError("Too many arguments [" + arg.GetSource() + "] ### ###");
+						}
+					}
+				}
+				return null;
+			}
 			public LispData run(List<LispExpression> args) {
+				LispError error = checkArgs(args);
+				if (error != null)
+					return error;
 				return code.Invoke(args);
 			}
 		}
