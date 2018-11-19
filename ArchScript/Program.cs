@@ -16,9 +16,10 @@ namespace Main {
 			p.run();
 		}
 		private void run() {
+			LispContext context = new LispContext();
 			while (true) {
 				LispParser interpreter = new LispParser(Console.ReadLine());
-				Console.WriteLine(interpreter.Parse().ToString());
+				Console.WriteLine(interpreter.Parse().Eval(context));
 			}
 		}
 	}
@@ -30,28 +31,118 @@ namespace Main {
 			return source.Substring(index - substring.Length, substring.Length).Equals(substring);
 		}
 	}
-	class LispContext {
-		public string eval(string code) {
-			return new LispParser(code).Parse().ToString();
+	public class StackDictionary<T, K> {
+		public Dictionary<string, LispData> globals;
+		public List<Dictionary<string, LispData>> stack;
+
+		public StackDictionary() {
+			globals = new Dictionary<string, LispData>();
+			stack = new List<Dictionary<string, LispData>>();
+		}
+
+		public bool Lookup(string symbol, out LispData result) {
+			for (int i = stack.Count - 1; i > -1; i++) {
+				if (stack[i].TryGetValue(symbol, out result)) {
+					return true;
+				}
+			}
+			if (globals.TryGetValue(symbol, out result)) {
+				return true;
+			}
+			return false;
+		}
+		public void Set(string symbol, LispData data) {
+			for (int i = stack.Count - 1; i > -1; i++) {
+				if (stack[i].ContainsKey(symbol)) {
+					stack[i][symbol] = data;
+					return;
+				}
+			}
+			globals[symbol] = data;
+		}
+		public void Delete(string symbol) {
+			for (int i = stack.Count - 1; i > -1; i++) {
+				if (stack[i].ContainsKey(symbol)) {
+					stack[i].Remove(symbol);
+					return;
+				}
+			}
+			globals.Remove(symbol);
+		}
+		public void Push(Dictionary<string, LispData> locals) {
+			stack.Add(locals);
+		}
+		public void Pop() {
+			stack.RemoveAt(stack.Count - 1);
 		}
 	}
-	class LispNil: LispData, LispCode {
-		public LispData Eval() => this;
+	public class LispContext {
+		public StackDictionary<string, LispData> variables { get; private set; }
+		public LispContext() {
+			variables = new StackDictionary<string, LispData>();
+			variables.globals = new Dictionary<string, LispData>() {
+				{"if", new LispPrimitive((context, args) => {
+
+					LispCode condition = new LispNil();
+					LispCode then = new LispNil();
+					LispCode @else = new LispNil();
+					if(args.Count == 0)
+						throw new Exception("Too few arguments");
+					if(args.Count >= 1)
+						condition = args[0];
+					if(args.Count >= 2)
+						then = args[1];
+					if(args.Count >= 3)
+						@else = args[2];
+					if(args.Count >= 4)
+						throw new Exception("Too many arguments");
+
+					if(condition.Eval(context) is LispNil) {
+						return @else.Eval(context);
+					} else {
+						return then.Eval(context);
+					}
+				}) },
+
+			};
+		}
+	}
+	interface LispFunction : LispData {
+		LispData Run(LispContext context, List<LispCode> args);
+	}
+	/*
+	class LispPrimitive : LispData {
+
+	}
+	*/
+	class LispPrimitive : LispFunction {
+		Func<LispContext, List<LispCode>, LispData> func;
+		public LispPrimitive(Func<LispContext, List<LispCode>, LispData> func) {
+			this.func = func;
+		}
+		public LispData Eval(LispContext context) => this;
+		public LispData Run(LispContext context, List<LispCode> args) {
+			return func(context, args);
+		}
+		public override string ToString() => "[LispPrimitive]";
+	}
+	class LispNil : LispData, LispCode {
+		public LispData Eval(LispContext context) => this;
 		public override string ToString() => "[LispNil]";
 	}
 	class LispTrue : LispData, LispCode {
-		public LispData Eval() => this;
+		public LispData Eval(LispContext context) => this;
 		public override string ToString() => "[LispTrue]";
 	}
 	public interface LispData : LispCode {
 
 	}
-	interface LispNumber : LispData, LispCode {
+	public interface LispNumber : LispData {
 		double AsDouble();
 		int AsInt();
-		LispData Eval();
+		LispData Eval(LispContext context);
 	}
-	class LispDouble : LispNumber {
+	public class LispDouble : LispNumber {
 		double value;
 		public LispDouble(double value) {
 			this.value = value;
@@ -60,37 +151,37 @@ namespace Main {
 		public double AsDouble() => value;
 
 		public int AsInt() => (int) value;
-		public LispData Eval() => this;
+		public LispData Eval(LispContext context) => this;
 		public override string ToString() {
 			return $"[LispDouble {value}]";
 		}
 	}
-	class LispInteger : LispNumber {
+	public class LispInteger : LispNumber {
 		int value;
 		public LispInteger(int value) {
 			this.value = value;
 		}
 		public double AsDouble() => value;
 		public int AsInt() => value;
-		public LispData Eval() => this;
+		public LispData Eval(LispContext context) => this;
 		public override string ToString() {
 			return $"[LispInt {value}]";
 		}
 	}
-	public class LispString : LispData, LispCode {
-		private string value;
+	public class LispString : LispData {
+		public string value;
 		public LispString(string value) {
 			this.value = value;
 		}
-		public LispData Eval() => this;
+		public LispData Eval(LispContext context) => this;
 		public override string ToString() => $"[LispString \"{value}\"]";
 	}
-	public class LispList : LispData, LispCode {
+	public class LispList : LispData {
 		private List<LispData> value;
 		public LispList(List<LispData> value) {
 			this.value = value;
 		}
-		public LispData Eval() => this;
+		public LispData Eval(LispContext context) => this;
 		public override string ToString() {
 			string result = "[LispList (";
 			value.GetRange(0, value.Count - 1).ForEach(s => result += s.ToString() + " ");
@@ -100,15 +191,22 @@ namespace Main {
 		}
 	}
 	public interface LispCode {
-		LispData Eval();
+		LispData Eval(LispContext context);
 	}
 	class LispExpression : LispCode {
 		public List<LispCode> subexpressions;
 		public LispExpression(List<LispCode> subexpressions) {
 			this.subexpressions = subexpressions;
 		}
-		public LispData Eval() {
-			return new LispNil();
+		public LispData Eval(LispContext context) {
+			LispData func = subexpressions.First().Eval(context);
+			var args = subexpressions.GetRange(1, subexpressions.Count - 1);
+			if (func is LispFunction f)
+				return f.Run(context, args);
+			else if (func is LispString s && context.variables.Lookup(s.value, out LispData v) && v is LispFunction f2)
+				return f2.Run(context, args);
+			else
+				throw new Exception("function expected");
 		}
 		public override string ToString() {
 			string result = "[LispExpression (";
@@ -123,7 +221,9 @@ namespace Main {
 		public LispSymbol(string symbol) {
 			this.symbol = symbol;
 		}
-		public LispData Eval() {
+		public LispData Eval(LispContext context) {
+			if (context.variables.Lookup(symbol, out LispData result))
+				return result;
 			throw new Exception($"No binding for symbol ### {symbol} ### {symbol} ###");
 		}
 		public override string ToString() {
@@ -210,7 +310,7 @@ namespace Main {
 
 			return new LispExpression(subexpressions);
 		}
-		public LispSymbol ParseSymbol() {
+		public LispCode ParseSymbol() {
 			string symbol = GetCurrentChar().ToString();
 			UpdateIndex(symbol);
 			bool active = true;
@@ -227,6 +327,10 @@ namespace Main {
 						break;
 				}
 			}
+			if (symbol.ToUpper() == "NIL")
+				return new LispNil();
+			else if (symbol.ToUpper() == "TRUE")
+				return new LispTrue();
 			return new LispSymbol(symbol);
 		}
 		public LispString ParseString() {
@@ -285,7 +389,7 @@ namespace Main {
 						active = false;
 						break;
 					default:
-						throw new Exception($"Invalid number format ### {code.Substring(begin, index)} ### {code} ###");
+						throw new Exception($"Invalid number format ### {code.Substring(begin, index - begin)} ### {code} ###");
 				}
 			}
 
@@ -353,6 +457,7 @@ namespace Main {
 								break;
 							case TokenType.End:
 							case TokenType.CloseParen:
+								UpdateIndex(t.str);
 								active = false;
 								break;
 							default:
