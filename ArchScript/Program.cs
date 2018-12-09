@@ -14,8 +14,20 @@ using static Main.LispExpression;
 namespace Main {
 	class Program {
 		static void Main(string[] args) {
-			Program p = new Program();
-			p.run();
+			if(args.Length == 0) {
+				Program p = new Program();
+				p.run();
+			} else {
+				string line = args[0];
+
+				string result;
+				try {
+					result = new LispParser(line).Parse().Eval(new LispContext()).Source;
+				} catch(LispError e) {
+					result = e.Source;
+				}
+				Console.WriteLine(result);
+			}
 		}
 		private void run() {
 			LispContext context = new LispContext();
@@ -144,7 +156,7 @@ namespace Main {
 						return new LispParser(s.value).Parse().Eval(context);
 					return arg.Eval(context);
 				})},
-				{"setq", new LispCheckedPrimitive(new List<ArgTypes>() {ArgTypes.Symbol, ArgTypes.Any}, (context, args) => {
+				{"setq", new LispCheckedPrimitive(new List<ArgTypes>() { ArgTypes.Symbol, ArgTypes.Any }, (context, args) => {
 					variables.Set(args[0].Source, args[1]);
 					return args[1];
 				})},
@@ -161,10 +173,11 @@ namespace Main {
 							throw new LispError($"Number expected {a.Source}");
 						}
 					});
-					if(integer)
+					if(integer) {
 						return new LispInteger((int) result);
-					else
+					} else {
 						return new LispDouble(result);
+					}
 				})},
 				{"cat", new LispCheckedPrimitive(new List<ArgTypes>() { ArgTypes.Rest }, (context, args) => {
 					return new LispString(string.Join("", args.Select(a => a is LispString s ? s.value : a.Source)));
@@ -398,7 +411,11 @@ namespace Main {
 		public LispStruct(Dictionary<string, LispData> value) {
 			this.value = value;
 		}
-		public LispData Eval(LispContext context) => this;
+		public LispData Eval(LispContext context) {
+			Dictionary<string, LispData> data = new Dictionary<string, LispData>(value);
+			data.Keys.ToList().ForEach(key => data[key] = data[key].Eval(context));
+			return new LispStruct(data);
+		}
 		public override string ToString() => $"[LispStruct {Source}]";
 	}
 	public class LispList : LispData {
@@ -485,6 +502,12 @@ namespace Main {
 					case TokenType.CloseParen:
 
 						break;
+					case TokenType.OpenBrace:
+						UpdateIndex(t.str);
+						return ParseStruct();
+					case TokenType.CloseBrace:
+
+						break;
 					case TokenType.Dot:
 						break;
 					case TokenType.Letter:
@@ -519,6 +542,8 @@ namespace Main {
 							active = false;
 							UpdateIndex(t.str);
 							break;
+						case TokenType.CloseBrace:
+							throw new LispError($"Unexpected brace ### {code.Substring(begin, index - begin)} ### {code} ###");
 						case TokenType.Space:
 							UpdateIndex(t.str);
 							break;
@@ -576,6 +601,59 @@ namespace Main {
 					}
 				}
 				return new LispString(result);
+			}
+			public LispStruct ParseStruct() {
+				int begin = index;
+				bool active = true;
+
+				Dictionary<string, LispData> data = new Dictionary<string, LispData>();
+				string key = null;
+				bool colon = false;
+				while (active) {
+					Token t = Read();
+					switch (t.type) {
+						case TokenType.CloseParen:
+							throw new LispError($"Unexpected close parenthesis ### {code.Substring(begin, index - begin)} ### {code} ###");
+						case TokenType.CloseBrace:
+							active = false;
+							UpdateIndex(t.str);
+							break;
+						case TokenType.Space:
+							UpdateIndex(t.str);
+							break;
+						case TokenType.End:
+							throw new LispError($"Missing close brace ### {code.Substring(begin, index - begin)} ### {code} ###");
+						case TokenType.Letter:
+							if(key == null) {
+								key = ParseSymbol().Source;
+							} else if(colon) {
+								data.Add(key, Parse());
+							} else {
+								throw new LispError($"Unexpected symbol ### {code.Substring(begin, index - begin)} ### {code} ###");
+							}
+							
+							break;
+						default:
+							if(t.str.Equals(":")) {
+								if (colon) {
+									throw new LispError($"Unexpected character ### {code.Substring(begin, index - begin)} ### {code} ###");
+								} else {
+									colon = true;
+								}
+								UpdateIndex(t.str);
+							} else if(key == null) {
+								throw new LispError($"Unexpected expression ### {code.Substring(begin, index - begin)} ### {code} ###");
+							} else if(colon) {
+								data.Add(key, Parse());
+								key = null;
+								colon = false;
+							} else {
+								throw new LispError($"Unexpected expression ### {code.Substring(begin, index - begin)} ### {code} ###");
+							}
+							break;
+					}
+				}
+				return new LispStruct(data);
 			}
 			public LispNumber ParseNumber() {
 				int begin = index;
@@ -742,6 +820,10 @@ namespace Main {
 					result = new Token(TokenType.OpenParen, "(");
 				} else if (code.StartsWithAt(")", index)) {
 					result = new Token(TokenType.CloseParen, ")");
+				} else if (code.StartsWithAt("{", index)) {
+					result = new Token(TokenType.OpenBrace, "{");
+				} else if (code.StartsWithAt("}", index)) {
+					result = new Token(TokenType.CloseBrace, "}");
 				} else if (code.StartsWithAt("'", index)) {
 					result = new Token(TokenType.Apostrophe, "'");
 				} else if (code.StartsWithAt("\"", index)) {
@@ -768,6 +850,10 @@ namespace Main {
 					result = new Token(TokenType.OpenParen, "(");
 				} else if (code.EndsWithAt(")", index)) {
 					result = new Token(TokenType.CloseParen, ")");
+				} else if (code.EndsWithAt("{", index)) {
+					result = new Token(TokenType.OpenBrace, "{");
+				} else if (code.EndsWithAt("}", index)) {
+					result = new Token(TokenType.CloseBrace, "}");
 				} else if (code.EndsWithAt("'", index)) {
 					result = new Token(TokenType.Apostrophe, "'");
 				} else if (code.EndsWithAt("\"", index)) {
@@ -790,6 +876,8 @@ namespace Main {
 
 				OpenParen,
 				CloseParen,
+				OpenBrace,
+				CloseBrace,
 				Apostrophe,
 				Quote,
 				Space,
