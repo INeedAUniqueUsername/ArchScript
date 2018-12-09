@@ -107,6 +107,43 @@ namespace Main {
 		public LispContext() {
 			variables = new StackDictionary<string, LispData>();
 			variables.globals = new Dictionary<string, LispData>() {
+				{"block", new LispPrimitive((context, args) => {
+					if(!(args[0].Eval(context) is LispStruct localStruct)) {
+						throw new LispError("local struct expected");
+					}
+
+					//Add a new frame
+					context.variables.Push(localStruct.value);
+
+					LispData result = new LispNil();
+					Dictionary<string, int> labels = new Dictionary<string, int>();
+					for(int i = 0; i < args.Count; i++) {
+						LispData d = args[i].Eval(context);
+						if(d is LispLabel l) {
+							//Create a label for jumping
+							labels.Add(l.name, i);
+						} else if(d is LispGoto g) {
+							//Jump to label
+							if(labels.ContainsKey(g.dest)) {
+								i = labels[g.dest];
+							} else {
+								//Let outer blocks handle this
+								result = g;
+								break;
+							}
+						} else if(d is LispReturn r) {
+							result = r.result;
+							break;
+						} else {
+							result = d;
+						}
+					}
+
+					//Remove the new frame
+					context.variables.Pop();
+
+					return result;
+				}) },
 				{"if", new LispPrimitive((context, args) => {
 
 					LispData condition = new LispNil();
@@ -136,31 +173,129 @@ namespace Main {
 						return then.Eval(context);
 					}
 				})},
-				{"while", new LispCheckedPrimitive(new List<ArgTypes>() {ArgTypes.Unevaluated, ArgTypes.Unevaluated}, (context, args) => {
+				{"unless", new LispPrimitive((context, args) => {
+
+					LispData condition = new LispNil();
+					LispData then = new LispNil();
+					LispData branch = new LispNil();
+					switch(args.Count) {
+						case 0:
+							throw new LispError("condition expected");
+						case 1:
+							throw new LispError("then expression expected");
+						case 2:
+							condition = args[0];
+							then = args[1];
+							break;
+						case 3:
+							condition = args[0];
+							then = args[1];
+							branch = args[2];
+							break;
+						default:
+							throw new LispError("too many arguments");
+					}
+
+					if(condition.Eval(context) is LispNil) {
+						return then.Eval(context);
+					} else {
+						return branch.Eval(context);
+					}
+				})},
+				{"do", new LispCheckedPrimitive(new[] {ArgTypes.Unevaluated, ArgTypes.Unevaluated }, (context, args) => {
 					LispData result = new LispNil();
-					while(!(args[0].Eval(context) is LispNil))
-						result = args[1].Eval(context);
+					do {
+						LispData d = args[0].Eval(context);
+						if(d is LispGoto g) {
+							result = g;
+							break;
+						} else if(d is LispReturn r) {
+							result = r.result;
+							break;
+						} else if(d is LispLabel) {
+							throw new LispError("Improper use of labels");
+						} else {
+							result = d;
+						}
+					} while(args[1].Eval(context) is LispNil);
 					return result;
 				})},
-				{"read", new LispCheckedPrimitive(new List<ArgTypes>(), (context, args) => {
+				{"while", new LispCheckedPrimitive(new[] {ArgTypes.Unevaluated, ArgTypes.Unevaluated}, (context, args) => {
+					LispData result = new LispNil();
+					while(!(args[0].Eval(context) is LispNil)) {
+						LispData d = args[0].Eval(context);
+						if(d is LispGoto g) {
+							result = g;
+							break;
+						} else if(d is LispReturn r) {
+							result = r.result;
+							break;
+						} else if(d is LispLabel) {
+							throw new LispError("Improper use of labels");
+						} else {
+							result = d;
+						}
+					}
+					return result;
+				})},
+				{"until", new LispCheckedPrimitive(new[] {ArgTypes.Unevaluated, ArgTypes.Unevaluated}, (context, args) => {
+					LispData result = new LispNil();
+					while(args[0].Eval(context) is LispNil) {
+						LispData d = args[0].Eval(context);
+						if(d is LispGoto g) {
+							result = g;
+							break;
+						} else if(d is LispReturn r) {
+							result = r.result;
+							break;
+						} else if(d is LispLabel) {
+							throw new LispError("Improper use of labels");
+						} else {
+							result = d;
+						}
+					}
+					return result;
+				})},
+				{"loop", new LispCheckedPrimitive(new[] { ArgTypes.Unevaluated }, (context, args) => {
+					LispData result = new LispNil();
+					while(true) {
+						LispData d = args[0].Eval(context);
+						if(d is LispGoto g) {
+							result = g;
+							break;
+						} else if(d is LispReturn r) {
+							result = r.result;
+							break;
+						} else if(d is LispLabel) {
+							throw new LispError("Improper use of labels");
+						} else {
+							result = d;
+						}
+					}
+					return result;
+				})},
+				{"return", new LispCheckedPrimitive(new ArgTypes[] { ArgTypes.Any }, (context, args) => new LispReturn(args[0].Eval(context))) },
+				{"label", new LispCheckedPrimitive(new ArgTypes[] { ArgTypes.Symbol }, (context, args) => new LispLabel(args[0].Source)) },
+				{"goto", new LispCheckedPrimitive(new ArgTypes[] { ArgTypes.Symbol }, (context, args) => new LispGoto(args[0].Source)) },
+				{"read", new LispCheckedPrimitive(new ArgTypes[0], (context, args) => {
 					return new LispString(Console.ReadLine());
 				}) },
-				{"print", new LispCheckedPrimitive(new List<ArgTypes>() {ArgTypes.Any}, (context, args) => {
+				{"print", new LispCheckedPrimitive(new[] {ArgTypes.Any}, (context, args) => {
 					Console.WriteLine(args[0].Source);
 					return new LispTrue();
 				})},
-				{"eval", new LispCheckedPrimitive(new List<ArgTypes>() {ArgTypes.Any}, (context, args) => {
+				{"eval", new LispCheckedPrimitive(new[] {ArgTypes.Any}, (context, args) => {
 					LispData arg = args[0];
 
 					if(arg is LispString s)
 						return new LispParser(s.value).Parse().Eval(context);
 					return arg.Eval(context);
 				})},
-				{"setq", new LispCheckedPrimitive(new List<ArgTypes>() { ArgTypes.Symbol, ArgTypes.Any }, (context, args) => {
+				{"setq", new LispCheckedPrimitive(new[] { ArgTypes.Symbol, ArgTypes.Any }, (context, args) => {
 					variables.Set(args[0].Source, args[1]);
 					return args[1];
 				})},
-				{"add", new LispCheckedPrimitive(new List<ArgTypes>() { ArgTypes.Rest }, (context, args) => {
+				{"add", new LispCheckedPrimitive(new[] { ArgTypes.Rest }, (context, args) => {
 					double result = 0;
 					bool integer = true;
 					args.ForEach(a => {
@@ -179,10 +314,10 @@ namespace Main {
 						return new LispDouble(result);
 					}
 				})},
-				{"cat", new LispCheckedPrimitive(new List<ArgTypes>() { ArgTypes.Rest }, (context, args) => {
+				{"cat", new LispCheckedPrimitive(new[] { ArgTypes.Rest }, (context, args) => {
 					return new LispString(string.Join("", args.Select(a => a is LispString s ? s.value : a.Source)));
 				})},
-				{"int", new LispCheckedPrimitive(new List<ArgTypes>() { ArgTypes.Any }, (context, args) => {
+				{"int", new LispCheckedPrimitive(new[] { ArgTypes.Any }, (context, args) => {
 					LispData arg = args[0];
 					if(arg is LispString s) {
 						if(new LispParser((s).value).Parse() is LispInteger i)
@@ -192,11 +327,11 @@ namespace Main {
 					}
 					return new LispNil();
 				}) },
-				{"throw", new LispCheckedPrimitive(new List<ArgTypes>() { ArgTypes.String }, (context, args) => {
-					LispString s = args[0] as LispString;
+				{"throw", new LispCheckedPrimitive(new[] { ArgTypes.String }, (context, args) => {
+					LispString s = new LispString(args[0].Source);
 					throw new LispError(s.value);
 				})},
-				{"try", new LispCheckedPrimitive(new List<ArgTypes>() { ArgTypes.Unevaluated, ArgTypes.Symbol, ArgTypes.Unevaluated }, (context, args) => {
+				{"try", new LispCheckedPrimitive(new[] { ArgTypes.Unevaluated, ArgTypes.Symbol, ArgTypes.Unevaluated }, (context, args) => {
 					try {
 						return args[0].Eval(context);
 					} catch(LispError e) {
@@ -247,19 +382,23 @@ namespace Main {
 			Struct,
 			Rest
 		}
-		List<ArgTypes> argtypes;
+		ArgTypes[] argtypes;
 		Func<LispContext, List<LispData>, LispData> func;
-		public LispCheckedPrimitive(List<ArgTypes> argtypes, Func<LispContext, List<LispData>, LispData> func) {
+		public LispCheckedPrimitive(ArgTypes[] argtypes, Func<LispContext, List<LispData>, LispData> func) {
 			this.argtypes = argtypes;
 			this.func = func;
 		}
 		public LispData Eval(LispContext context) => this;
 		private void Validate(LispContext context, List<LispData> args) {
 			bool rest = false;
-			for(int i = 0; i < args.Count; i++) {
 
-				if(i > argtypes.Count - 1) {
-					if(rest) {
+			if (args.Count < argtypes.Length && argtypes.Last() != ArgTypes.Rest) {
+				throw new LispError("Too few arguments");
+			}
+			for (int i = 0; i < args.Count; i++) {
+
+				if (i > argtypes.Length - 1) {
+					if (rest) {
 						EvaluateArg();
 					} else {
 						throw new LispError("Too many arguments");
@@ -429,6 +568,33 @@ namespace Main {
 			return $"[LispList ({string.Join(" ", value.ConvertAll(d => d.Source))})]";
 		}
 	}
+	public interface LispInterrupt : LispData {
+
+	}
+	public class LispReturn : LispInterrupt {
+		public LispData result;
+		public LispReturn(LispData result) {
+			this.result = result;
+		}
+		public string Source => $"(return {result.Source})";
+		public LispData Eval(LispContext context) => this;
+	}
+	public class LispGoto : LispInterrupt {
+		public string dest;
+		public LispGoto(string dest) {
+			this.dest = dest;
+		}
+		public string Source => $"(goto {dest})";
+		public LispData Eval(LispContext context) => this;
+	}
+	public class LispLabel : LispInterrupt {
+		public string name;
+		public LispLabel(string name) {
+			this.name = name;
+		}
+		public string Source => $"(label {name})";
+		public LispData Eval(LispContext context) => this;
+	}
 	class LispExpression : LispData {
 		public string Source => $"({string.Join(" ", subexpressions.ConvertAll(d => d.Source))})";
 		public List<LispData> subexpressions;
@@ -483,27 +649,38 @@ namespace Main {
 
 		public class LispParser {
 
+			int unclosed;
 			string code;
 			int index, column, row;
-
 
 			public LispParser(string code) {
 				this.code = code;
 				index = 0;
 				column = 0;
 				row = 0;
+				unclosed = 0;
+			}
+			public bool RequestAdditionalInput(string message) {
+				Console.WriteLine(message);
+				string s = Console.ReadLine();
+				if(s.Length > 0) {
+					code += s;
+					return true;
+				} else {
+					code += " ";
+					return false;
+				}
+				
 			}
 			public LispData Parse() {
 				Token t = Read();
 				switch (t.type) {
 					case TokenType.OpenParen:
-						UpdateIndex(t.str);
 						return ParseExpression();
 					case TokenType.CloseParen:
 
 						break;
 					case TokenType.OpenBrace:
-						UpdateIndex(t.str);
 						return ParseStruct();
 					case TokenType.CloseBrace:
 
@@ -533,12 +710,17 @@ namespace Main {
 			public LispData ParseExpression() {
 				List<LispData> subexpressions = new List<LispData>();
 
+				unclosed++;
 				int begin = index;
 				bool active = true;
+
+				UpdateIndex(Read().str);
+
 				while (active) {
 					Token t = Read();
 					switch (t.type) {
 						case TokenType.CloseParen:
+							unclosed--;
 							active = false;
 							UpdateIndex(t.str);
 							break;
@@ -548,6 +730,9 @@ namespace Main {
 							UpdateIndex(t.str);
 							break;
 						case TokenType.End:
+							if(RequestAdditionalInput($"Complete: {code.Substring(begin, index - begin)}")) {
+								break;
+							}
 							throw new LispError($"Missing close paren ### {code.Substring(begin, index - begin)} ### {code} ###");
 						default:
 							subexpressions.Add(Parse());
@@ -569,6 +754,14 @@ namespace Main {
 							symbol += t.str;
 							UpdateIndex(t.str);
 							break;
+						case TokenType.End:
+							//Request additional input if we have unclosed parenthesis
+							if(unclosed > 0 && RequestAdditionalInput($"Complete: {symbol}")) {
+							} else {
+								active = false;
+							}
+							
+							break;
 						default:
 							active = false;
 							break;
@@ -581,6 +774,7 @@ namespace Main {
 				return new LispSymbol(symbol);
 			}
 			public LispString ParseString() {
+				unclosed++;
 				int begin = index;
 				string result = "";
 				UpdateIndex(Read().str);
@@ -589,10 +783,14 @@ namespace Main {
 					Token t = Read();
 					switch (t.type) {
 						case TokenType.Quote:
+							unclosed--;
 							active = false;
 							UpdateIndex(t.str);
 							break;
 						case TokenType.End:
+							if (RequestAdditionalInput($"Complete: {code.Substring(begin, index - begin)}")) {
+								break;
+							}
 							throw new LispError($"Unexpected end of line ### {code.Substring(begin, index - begin)} ### {code} ###");
 						default:
 							result += t.str;
@@ -603,8 +801,11 @@ namespace Main {
 				return new LispString(result);
 			}
 			public LispStruct ParseStruct() {
+				unclosed++;
 				int begin = index;
 				bool active = true;
+
+				UpdateIndex(Read().str);
 
 				Dictionary<string, LispData> data = new Dictionary<string, LispData>();
 				string key = null;
@@ -615,6 +816,7 @@ namespace Main {
 						case TokenType.CloseParen:
 							throw new LispError($"Unexpected close parenthesis ### {code.Substring(begin, index - begin)} ### {code} ###");
 						case TokenType.CloseBrace:
+							unclosed--;
 							active = false;
 							UpdateIndex(t.str);
 							break;
@@ -622,6 +824,9 @@ namespace Main {
 							UpdateIndex(t.str);
 							break;
 						case TokenType.End:
+							if (RequestAdditionalInput($"Complete: {code.Substring(begin, index - begin)}")) {
+								break;
+							}
 							throw new LispError($"Missing close brace ### {code.Substring(begin, index - begin)} ### {code} ###");
 						case TokenType.Letter:
 							if(key == null) {
@@ -683,9 +888,14 @@ namespace Main {
 							}
 							UpdateIndexOnce();
 							break;
+						case TokenType.End:
+							//We should request additional input on end of line if we have unclosed parenthesis
+							if (unclosed > 0 && RequestAdditionalInput($"Complete: {result}"))
+								break;
+							active = false;
+							break;
 						case TokenType.CloseParen:
 						case TokenType.Space:
-						case TokenType.End:
 							active = false;
 							break;
 						default:
@@ -730,6 +940,11 @@ namespace Main {
 									UpdateIndex(t.str);
 									break;
 								case TokenType.End:
+									//Request for additional input if we have unclosed parenthesis
+									if (unclosed > 0 && RequestAdditionalInput($"Complete: {symbol}"))
+										break;
+									active = false;
+									break;
 								case TokenType.Space:
 								case TokenType.CloseParen:
 									active = false;
@@ -756,6 +971,10 @@ namespace Main {
 									UpdateIndex(t.str);
 									break;
 								case TokenType.End:
+									//Request for additional input if we have unclosed parenthesis
+									if (unclosed > 0 && RequestAdditionalInput($"Complete: {code.Substring(begin, index - begin)}"))
+										break;
+									throw new LispError($"Unexpected end of line ### {code.Substring(begin, index - begin)} ### {code} ###");
 								case TokenType.CloseParen:
 									UpdateIndex(t.str);
 									active = false;
