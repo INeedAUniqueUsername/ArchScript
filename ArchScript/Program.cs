@@ -302,8 +302,47 @@ namespace Main {
 						return new LispParser(s.value).Parse().Eval(context);
 					return arg.Eval(context);
 				})},
+				{"lambda", new LispCheckedPrimitive(new[] { ArgTypes.Expression, ArgTypes.Expression, ArgTypes.Unevaluated }, (context, args) => {
+					Dictionary<string, LispData> captured = new Dictionary<string, LispData>();
+					List<string> parameters = new List<string>();
+
+
+					//First arg is capture list
+					var capturedArg = args[0] as LispExpression;
+					capturedArg.subexpressions.ForEach(sub => {
+						if(sub is LispSymbol symbol) {
+							captured[symbol.Source] = symbol.Eval(context);
+						} else {
+							throw new LispError("Symbol list expected");
+						}
+					});
+
+					var parametersArg = args[1] as LispExpression;
+					parametersArg.subexpressions.ForEach(sub => {
+						if(sub is LispSymbol symbol) {
+							parameters.Add(symbol.Source);
+						} else {
+							throw new LispError("Symbol list expected");
+						}
+					});
+
+					//To do: Add rest parameters option
+					return new LispPrimitive((context2, args2) => {
+						context2.variables.Push(captured);
+						parameters.ForEach(p => context2.variables.SetLocal(p, new LispNil()));
+						for(int i = 0; i < args2.Count; i++) {
+							if(i < parameters.Count) {
+								context2.variables.SetLocal(parameters[i], args2[i]);
+							}
+						}
+						var result = args[2].Eval(context);
+						context2.variables.Pop();
+						return result;
+					});
+
+				}) },
 				{"setq", new LispCheckedPrimitive(new[] { ArgTypes.Symbol, ArgTypes.Any }, (context, args) => {
-					variables.Set(args[0].Source, args[1]);
+					((LispSymbol) args[0]).Set(context, args[1]);
 					return args[1];
 				})},
 				{"add", new LispCheckedPrimitive(new[] { ArgTypes.Rest }, (context, args) => {
@@ -386,12 +425,14 @@ namespace Main {
 			Double,
 			List,
 			Number,
+			Expression,
 			Symbol,
 			String,
 			Unevaluated,
 			Any,
 			Struct,
-			Rest
+			Rest,
+			RestUnevaluated,
 		}
 		ArgTypes[] argtypes;
 		Func<LispContext, List<LispData>, LispData> func;
@@ -401,16 +442,17 @@ namespace Main {
 		}
 		public LispData Eval(LispContext context) => this;
 		private void Validate(LispContext context, List<LispData> args) {
-			bool rest = false;
-
+			ArgTypes? rest = null;
+			
 			if (args.Count < argtypes.Length && argtypes.Last() != ArgTypes.Rest) {
 				throw new LispError("Too few arguments");
 			}
 			for (int i = 0; i < args.Count; i++) {
 
 				if (i > argtypes.Length - 1) {
-					if (rest) {
+					if (rest == ArgTypes.Rest) {
 						EvaluateArg();
+					} else if (rest == ArgTypes.RestUnevaluated) {
 					} else {
 						throw new LispError("Too many arguments");
 					}
@@ -441,6 +483,11 @@ namespace Main {
 								throw new LispError("Number expected");
 							}
 							break;
+						case ArgTypes.Expression:
+							if(!(GetArg() is LispExpression)) {
+								throw new LispError("Expression expected");
+							}
+							break;
 						case ArgTypes.Symbol:
 							if (GetArg() is LispString str)
 								SetArg(new LispSymbol(str.value));
@@ -465,7 +512,10 @@ namespace Main {
 							break;
 						case ArgTypes.Rest:
 							EvaluateArg();
-							rest = true;
+							rest = ArgTypes.Rest;
+							break;
+						case ArgTypes.RestUnevaluated:
+							rest = ArgTypes.RestUnevaluated;
 							break;
 					}
 				}
@@ -655,29 +705,6 @@ namespace Main {
 									subStruct = TryStruct(TryLookup(subStruct, parts[i]));
 								}
 								return TryLookup(subStruct, parts[parts.Length - 1]);
-								/*
-								if (origin is LispStruct s && s.value.TryGetValue(parts[1], out LispData d) && d is LispStruct subStruct) {
-
-									for (int i = 2; i < parts.Length - 1; i++) {
-										if(subStruct.value.TryGetValue(parts[i], out d)) {
-											if((subStruct = d as LispStruct) != null) {
-												
-												if(subStruct.value.TryGetValue(parts[parts.Length - 1], out d)) {
-													return d;
-												} else {
-
-												}
-
-											} else {
-												throw new LispError($"Unknown struct key [{Source}]");
-											}
-										} else {
-											throw new LispError($"Struct expected [{Source}]");
-										}
-									}
-								}
-								*/
-								break;
 							}
 					}
 					LispData TryLookup(LispStruct s, string key) {
@@ -709,8 +736,44 @@ namespace Main {
 					throw new LispError($"No binding for symbol [{Source}]");
 			}
 			*/
-			public void Set(LispContext context) {
-				
+			public void Set(LispContext context, LispData value) {
+				string[] parts = Symbol.Split('.');
+
+				if(parts.Length == 1) {
+					context.variables.Set(parts[0], value);
+				} else if (context.variables.Lookup(parts[0], out LispData origin)) {
+					switch (parts.Length) {
+						case 2: {
+								TryStruct(origin).value[parts[1]] = value;
+								break;
+							}
+						default: {
+								LispStruct subStruct = TryStruct(TryLookup(TryStruct(origin), parts[1]));
+
+
+								for (int i = 2; i < parts.Length - 1; i++) {
+									subStruct = TryStruct(TryLookup(subStruct, parts[i]));
+								}
+								subStruct.value[parts[parts.Length - 1]] = value;
+								break;
+							}
+					}
+					LispData TryLookup(LispStruct s, string key) {
+						if (s.value.TryGetValue(key, out LispData result)) {
+							return result;
+						}
+						throw new LispError($"Unknown key [{key}]");
+					}
+					LispStruct TryStruct(LispData d) {
+						if (d is LispStruct s) {
+							return s;
+						} else {
+							throw new LispError($"Struct expected {d.ToString()}");
+						}
+					}
+				} else {
+					throw new LispError($"No binding for symbol [{Source}]");
+				}
 			}
 			public override string ToString() {
 				return $"[LispSymbol {Symbol}]";
