@@ -202,6 +202,17 @@ namespace Main {
 						return branch.Eval(context);
 					}
 				})},
+				{"for", new LispCheckedPrimitive(new[] {ArgTypes.Symbol, ArgTypes.Number, ArgTypes.Number, ArgTypes.Unevaluated}, (context, args) => {
+					Dictionary<string, LispData> locals = new Dictionary<string, LispData>();
+					context.variables.Push(locals);
+					LispData result = new LispNil();
+					for(int i = ((LispNumber) args[1].Eval(context)).AsInt(); i < ((LispNumber) args[2].Eval(context)).AsInt(); i++) {
+						locals[((LispSymbol) args[0]).Source] = new LispInteger(i);
+						result = args[3].Eval(context);
+					}
+					context.variables.Pop();
+					return result;
+				}) },
 				{"do", new LispCheckedPrimitive(new[] {ArgTypes.Unevaluated, ArgTypes.Unevaluated }, (context, args) => {
 					LispData result = new LispNil();
 					do {
@@ -626,10 +637,80 @@ namespace Main {
 			}
 
 			public LispData Eval(LispContext context) {
+				string[] parts = Symbol.Split('.');
+
+				if(context.variables.Lookup(parts[0], out LispData origin)) {
+					switch(parts.Length) {
+						case 1: {
+								return origin;
+							}
+						case 2: {
+								return TryLookup(TryStruct(origin), parts[1]);
+							}
+						default: {
+								LispStruct subStruct = TryStruct(TryLookup(TryStruct(origin), parts[1]));
+
+
+								for (int i = 2; i < parts.Length - 1; i++) {
+									subStruct = TryStruct(TryLookup(subStruct, parts[i]));
+								}
+								return TryLookup(subStruct, parts[parts.Length - 1]);
+								/*
+								if (origin is LispStruct s && s.value.TryGetValue(parts[1], out LispData d) && d is LispStruct subStruct) {
+
+									for (int i = 2; i < parts.Length - 1; i++) {
+										if(subStruct.value.TryGetValue(parts[i], out d)) {
+											if((subStruct = d as LispStruct) != null) {
+												
+												if(subStruct.value.TryGetValue(parts[parts.Length - 1], out d)) {
+													return d;
+												} else {
+
+												}
+
+											} else {
+												throw new LispError($"Unknown struct key [{Source}]");
+											}
+										} else {
+											throw new LispError($"Struct expected [{Source}]");
+										}
+									}
+								}
+								*/
+								break;
+							}
+					}
+					LispData TryLookup(LispStruct s, string key) {
+						if(s.value.TryGetValue(key, out LispData result)) {
+							return result;
+						}
+						throw new LispError($"Unknown key [{key}]");
+					}
+					LispStruct TryStruct(LispData d) {
+						if(d is LispStruct s) {
+							return s;
+						} else {
+							throw new LispError($"Struct expected {d.ToString()}");
+						}
+					}
+				} else {
+					throw new LispError($"No binding for symbol [{Source}]");
+				}
+
+				//global/local
+				//struct.subStruct.member
+
+			}
+			/*
+			public LispData Eval(LispContext context) {
 				if (context.variables.Lookup(Symbol, out LispData result))
 					return result;
 				else
 					throw new LispError($"No binding for symbol [{Source}]");
+			}
+			*/
+			public void Set(LispContext context) {
+				
 			}
 			public override string ToString() {
 				return $"[LispSymbol {Symbol}]";
@@ -749,6 +830,8 @@ namespace Main {
 				while (active) {
 					Token t = Read();
 					switch (t.type) {
+						case TokenType.Dot:
+							//For now we treat a dot as a regular character
 						case TokenType.Letter:
 						case TokenType.Digit:
 							symbol += t.str;
